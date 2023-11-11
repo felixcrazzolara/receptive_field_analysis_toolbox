@@ -4,12 +4,14 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import torch
 from attr import attrib, attrs
 from graphviz import Digraph as GraphVizDigraph
+import numpy as np
 
 from rfa_toolbox.encodings.pytorch.domain import LayerInfoHandler, NodeSubstitutor
 from rfa_toolbox.encodings.pytorch.layer_handlers import (
     AnyAdaptivePool,
     AnyConv,
     AnyHandler,
+    AnyInterpolate,
     AnyPool,
     ConvNormActivationHandler,
     FlattenHandler,
@@ -35,6 +37,7 @@ RESOLVING_STRATEGY = [
     AnyConv(),
     AnyPool(),
     AnyAdaptivePool(),
+    AnyInterpolate(),
     FlattenHandler(),
     LinearHandler(),
     FunctionalKernelHandler(),
@@ -82,6 +85,8 @@ class Digraph:
         label: str,
         kernel_size: Optional[Union[Tuple[int, ...], int]] = None,
         stride_size: Optional[Union[Tuple[int, ...], int]] = None,
+        input_size: Optional[np.ndarray] = None,
+        output_size: Optional[np.ndarray] = None,
     ) -> LayerDefinition:
         resolvable = self._get_resolvable(label)
         name = self._get_name(label)
@@ -93,6 +98,8 @@ class Digraph:
                     name=name,
                     kernel_size=kernel_size,
                     stride_size=stride_size,
+                    input_size=input_size,
+                    output_size=output_size
                 )
         raise ValueError(f"Did not find a way to handle the following layer: {name}")
 
@@ -123,6 +130,8 @@ class Digraph:
         style: Optional[str] = None,
         kernel_size: Optional[Union[Tuple[int, ...], int]] = None,
         stride_size: Optional[Union[Tuple[int, ...], int]] = None,
+        input_size: Optional[np.ndarray] = None,
+        output_size: Optional[np.ndarray] = None,
         units: Optional[int] = None,
         filters: Optional[int] = None,
     ) -> None:
@@ -141,7 +150,7 @@ class Digraph:
         """
         label = name if label is None else label
         layer_definition = self._get_layer_definition(
-            label, kernel_size=kernel_size, stride_size=stride_size
+            label, kernel_size=kernel_size, stride_size=stride_size, input_size=input_size, output_size=output_size
         )
         self.layer_definitions[name] = layer_definition
 

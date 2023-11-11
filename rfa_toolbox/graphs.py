@@ -140,6 +140,7 @@ class LayerDefinition(Layer):
     stride_size: Optional[Union[int, Sequence[int]]] = attrib(
         converter=lambda x: 1 if x is None else x, default=None
     )
+    output_size: Optional[np.ndarray] = attrib(default=None)
     filters: Optional[int] = None
     units: Optional[int] = None
 
@@ -186,6 +187,9 @@ class LayerDefinition(Layer):
                     )
 
     def __attrs_post_init__(self):
+        if self.kernel_size != None and type(self.output_size) == type(None):
+            # This should never happen
+            raise
         self._check_consistency_for_kernel_and_stride_sequences()
 
     @classmethod
@@ -377,25 +381,6 @@ class EnrichedNetworkNode(Node):
             self._group_by_dim(self.receptive_field_sizes), func
         )
 
-    def _scale_factors(self) -> Union[int, Sequence[int]]:
-        return [elem.multiplicator for elem in self.receptive_field_info]
-
-    def _apply_function_on_multiplicator(
-        self, func: Callable[[List[int]], int]
-    ) -> Union[Sequence[int], int]:
-        """Apply a function on the multiplicators of the receptive field growths
-
-        Args:
-            func:  The function to apply.
-
-        Returns:
-            The result of the function.
-
-        """
-        return self._apply_function_on_receptive_field_groups(
-            self._group_by_dim(self._scale_factors()), func
-        )
-
     def _receptive_field_min(self):
         return self._apply_function_on_receptive_field_sizes(
             lambda x: min(x, default=0)
@@ -452,28 +437,13 @@ class EnrichedNetworkNode(Node):
         for pred in self.predecessors:
             pred.succecessors.append(self)
 
-    def get_maximum_scale_factor(self) -> Union[int, Sequence[int]]:
-        return self._apply_function_on_multiplicator(lambda x: max(x, default=0))
+    def get_output_res(self) -> np.ndarray:
+        return self.layer_info.output_size
 
-    def compute_feature_map_size(self, input_resolution: Union[int, Sequence[int]]):
-        """Compute the feature map size.
-
-        Args:
-            input_resolution:  The input resolution.
-
-        Returns:
-            The feature map size.
-
-        """
-        scale_factor = self.get_maximum_scale_factor()
-        return np.asarray(input_resolution) // np.asarray(scale_factor)
-
-    def _feature_map_size_larger_than_kernel(
-        self, pred: "EnrichedNetworkNode", input_resolution: int
-    ):
+    def _feature_map_size_larger_than_kernel(self):
         return np.all(
             np.asarray(
-                pred.compute_feature_map_size(input_resolution)
+                self.layer_info.output_size
                 <= np.asarray(self.layer_info.kernel_size)
             )
         )
@@ -527,7 +497,7 @@ class EnrichedNetworkNode(Node):
         if self.layer_info.kernel_size != np.inf:
             behaves_like_fully_connected = np.asarray(
                 [
-                    self._feature_map_size_larger_than_kernel(pred, input_resolution)
+                    self._feature_map_size_larger_than_kernel()
                     for pred in self.predecessors
                 ]
             )

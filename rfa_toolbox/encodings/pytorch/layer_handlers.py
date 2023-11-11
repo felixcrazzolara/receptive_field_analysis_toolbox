@@ -8,7 +8,6 @@ from attr import attrs
 from rfa_toolbox.encodings.pytorch.domain import LayerInfoHandler
 from rfa_toolbox.graphs import LayerDefinition
 
-
 def obtain_module_with_resolvable_string(
     resolvable: str, model: torch.nn.Module
 ) -> torch.nn.Module:
@@ -62,6 +61,25 @@ class Conv2d(LayerInfoHandler):
             # if isinstance(conv_layer.stride, int)
             # else conv_layer.stride[0]
         )
+        padding_size = (
+            conv_layer.padding
+        )
+        input_size = kwargs['input_size']
+        output_size = np.empty(len(conv_layer.kernel_size),dtype=int)
+        for i in range(len(conv_layer.kernel_size)):
+            if kernel_size[i] % 2 == 0:
+                raise
+            if input_size[i] + 2*padding_size[i] < kernel_size[i]:
+                input_size[i] = 0
+            else:
+                # k >= 1
+                # Used size is:
+                # (kernel_size[i]-1)/2 + 1 + stride_size[i]*(k-1) + (kernel_size[i]-1)/2 =
+                #  kernel_size[i]-1    + 1 + stride_size[i]*(k-1) =
+                #  kernel_size[i]          + stride_size[i]*(k-1)
+                usable_size = input_size[i] + 2*padding_size[i]
+                k = ((usable_size - kernel_size[i]) // stride_size[i]) + 1
+                output_size[i] = k
         filters = conv_layer.out_channels
         if not isinstance(kernel_size, Sequence) and not isinstance(
             kernel_size, np.ndarray
@@ -69,14 +87,14 @@ class Conv2d(LayerInfoHandler):
             kernel_size_name = f"{kernel_size}x{kernel_size}"
         else:
             kernel_size_name = "x".join([str(k) for k in kernel_size])
-        final_name = f"{name} {kernel_size_name} / {stride_size}"
+        final_name = f"{name} {kernel_size_name} / s{stride_size} / p{padding_size}"
         return LayerDefinition(
-            name=final_name,  # f"{name} {kernel_size}x{kernel_size}",
+            name=final_name,  # f"{name} {kernel_size}x{kernel_size}x{padding_size}",
             kernel_size=kernel_size,
             stride_size=stride_size,
+            output_size=output_size,
             filters=filters,
         )
-
 
 @attrs(auto_attribs=True, frozen=True, slots=True)
 class ConvNormActivationHandler(LayerInfoHandler):
@@ -145,21 +163,26 @@ class AnyPool(Conv2d):
     ) -> LayerDefinition:
         conv_layer = obtain_module_with_resolvable_string(resolvable_string, model)
         kernel_size = conv_layer.kernel_size
-
         stride_size = conv_layer.stride
+        padding_size = conv_layer.padding
+        input_size = kwargs['input_size']
+        output_size = np.empty(2,dtype=int)
+        output_size[0] = (input_size[0]+2*padding_size-kernel_size) // stride_size + 1
+        output_size[1] = (input_size[1]+2*padding_size-kernel_size) // stride_size + 1
+
         if not isinstance(kernel_size, Sequence) and not isinstance(
             kernel_size, np.ndarray
         ):
             kernel_size_name = f"{kernel_size}x{kernel_size}"
         else:
             kernel_size_name = "x".join([str(k) for k in kernel_size])
-        final_name = f"{name} {kernel_size_name} / {stride_size}"
+        final_name = f"{name} {kernel_size_name} / s{stride_size} / p{padding_size}"
         return LayerDefinition(
             name=final_name,  # f"{name} {kernel_size}x{kernel_size}",
             kernel_size=kernel_size,
             stride_size=stride_size,
+            output_size=output_size
         )
-
 
 @attrs(auto_attribs=True, frozen=True, slots=True)
 class AnyAdaptivePool(Conv2d):
@@ -173,10 +196,29 @@ class AnyAdaptivePool(Conv2d):
     ) -> LayerDefinition:
         kernel_size = None
         stride_size = 1
+
         return LayerDefinition(
-            name=name, kernel_size=kernel_size, stride_size=stride_size
+            name=name, kernel_size=kernel_size, stride_size=stride_size,
+            output_size=obtain_module_with_resolvable_string(resolvable_string, model).output_size
         )
 
+@attrs(auto_attribs=True, frozen=True, slots=True)
+class AnyInterpolate(LayerInfoHandler):
+    """Extract information from adaptive pooling layers."""
+
+    def can_handle(self, name: str) -> bool:
+        return 'upsample' in name
+
+    def __call__(
+        self, model: torch.nn.Module, resolvable_string: str, name: str, **kwargs
+    ) -> LayerDefinition:
+        if name != 'upsample_bilinear2d':
+            raise
+
+        return LayerDefinition(
+            name=name, kernel_size=[1,1], stride_size=[1,1], # TODO: This is wrong
+            output_size=kwargs['output_size']
+        )
 
 @attrs(auto_attribs=True, frozen=True, slots=True)
 class SqueezeExcitationHandler(Conv2d):
@@ -325,11 +367,12 @@ class AnyHandler(LayerInfoHandler):
     ) -> LayerDefinition:
         kernel_size = 1
         stride_size = 1
+        output_size = kwargs["input_size"]
         if "(" in resolvable_string and ")" in name:
             result = name.split("(")[-1].replace(")", "")
         else:
             result = f"{name.split('.')[-1]}"
 
         return LayerDefinition(
-            name=result, kernel_size=kernel_size, stride_size=stride_size
+            name=result, kernel_size=kernel_size, stride_size=stride_size, output_size=output_size
         )

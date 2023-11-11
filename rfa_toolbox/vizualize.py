@@ -95,7 +95,7 @@ def visualize_node(
 
     feature_map_size = (
         _feature_map_size_label(
-            np.asarray(input_res) // np.asarray(node.get_maximum_scale_factor())
+            node.get_output_res()
         )
         if node.kernel_size != np.inf
         else ""

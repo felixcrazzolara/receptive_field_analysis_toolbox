@@ -1,5 +1,7 @@
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
+import numpy as np
+
 from rfa_toolbox.graphs import (
     KNOWN_FILTER_MAPPING,
     EnrichedNetworkNode,
@@ -96,6 +98,7 @@ def _resolve_variables(variables: List[str], graph_row_dict: Dict[str, str]):
 
 
 def make_graph(
+    input_res,
     mod,
     classes_to_visit=None,
     classes_found=None,
@@ -148,7 +151,7 @@ def make_graph(
             seen_edges.add((n1, n2))
             dot.edge(n1, n2)
 
-    def make_edges(pr, inpname, name, op, edge_dot=dot):
+    def make_edges(pr, inpname, name, op, edge_dot=dot, input_size=None):
         if op:
             if inpname not in seen_inpnames:
                 seen_inpnames.add(inpname)
@@ -160,11 +163,14 @@ def make_graph(
                         line_len = 0
                     label_lines[-1].append(w)
                     line_len += len(w) + 1
+                if type(input_size) == type(None):
+                    raise
                 edge_dot.node(
                     inpname,
                     label="\n".join([" ".join(w) for w in label_lines]),
                     shape="box",
                     style="rounded",
+                    input_size=input_size
                 )
                 for p in pr:
                     add_edge(edge_dot, p, inpname)
@@ -173,13 +179,21 @@ def make_graph(
             for p in pr:
                 add_edge(edge_dot, p, name)
 
+    if len(list(gr.inputs())[1:]) != 1:
+        # TODO: This is not implemented
+    	raise
     for nr, i in enumerate(list(gr.inputs())[1:]):
         name = prefix + "inp_" + i.debugName()
         preds[i] = {name}, set()
-        dot.node(name, shape="ellipse")
+        dot.node(name, shape="ellipse", input_size=input_res[2:] if len(input_res) == 4 else input_res)
         if input_preds is not None:
             pr, op = input_preds[nr]
-            make_edges(pr, "inp_" + name, name, op, edge_dot=parent_dot)
+            output_size = dot.layer_definitions[list(pr)[0]].output_size
+            if len(pr) > 1:
+                for j in range(2,len(pr)):
+                    if not np.all(dot.layer_definitions[list(pr)[j]].output_size == output_size):
+                        raise
+            make_edges(pr, "inp_" + name, name, op, edge_dot=parent_dot, input_size=output_size)
 
     def is_relevant_type(t):
         kind = t.kind()
@@ -251,7 +265,11 @@ def make_graph(
                     for i, k in enumerate(submodule_name.split(".")):
                         submod = getattr(submod, k)
                         # create subgraph for the submodule
+                    if len(list(n.inputs())[1:]) != 1:
+                        # TODO: Not implemented
+                        raise
                     make_graph(
+                        dot.layer_definitions[list(preds[list(n.inputs())[1:][0]][0])[0]].output_size,
                         submod,
                         dot=sub_dot,
                         prefix=sub_prefix,
@@ -269,11 +287,19 @@ def make_graph(
                         preds[o] = {sub_prefix + f"out_{i}"}, set()
             else:
                 # here the basic node (Conv2D, BatchNorm etc.) are created.
-                dot.node(name, label=label, shape="box")
+                if len(relevant_inputs) != 1:
+                    # TODO: This is not implemented
+                    raise
+                dot.node(name, label=label, shape="box", input_size=dot.layer_definitions[list(preds[relevant_inputs[0]][0])[0]].output_size)
                 for i in relevant_inputs:
                     # create edges between predecessor and node
                     pr, op = preds[i]
-                    make_edges(pr, prefix + i.debugName(), name, op)
+                    output_size = dot.layer_definitions[list(pr)[0]].output_size
+                    if len(pr) > 1:
+                        for j in range(2,len(pr)):
+                            if dot.layer_definitions[list(pr)[j]].output_size != output_size:
+                                raise
+                    make_edges(pr, prefix + i.debugName(), name, op, input_size=output_size)
                 # register the node in the preds dict
                 for o in n.outputs():
                     # print(o, name)
@@ -283,6 +309,8 @@ def make_graph(
             funcname = list(n.inputs())[0].type().__repr__().split(".")[-1]
             name = prefix + "." + n.output().debugName()
             label = funcname
+            # TODO: Not implemented
+            raise
             dot.node(name, label=label, shape="box")
             for i in relevant_inputs:
                 pr, op = preds[i]
@@ -305,6 +333,30 @@ def make_graph(
             for i in relevant_inputs:
                 pr, op = preds[i]
                 make_edges(pr, prefix + i.debugName(), name, op)
+            for o in n.outputs():
+                preds[o] = {name}, set()
+        elif n.kind() == 'aten::upsample_bilinear2d':
+            name = prefix + "." + n.output().debugName()
+            label = n.kind().split("::")[-1]
+            key = _obtain_node_key(str(n))
+            vars = _obtain_variable_from_node_string_atten(key, variable_names)
+            if len(list(n.outputs())) > 1:
+                raise
+            dot.node(
+                name,
+                label=label,
+                shape="box",
+                input_size=dot.layer_definitions[list(preds[relevant_inputs[0]][0])[0]].output_size,
+                output_size=list(n.outputs())[0].type().sizes()[2:]
+            )
+            for i in relevant_inputs:
+                pr, op = preds[i]
+                output_size = dot.layer_definitions[list(pr)[0]].output_size
+                if len(pr) > 1:
+                    for j in range(2,len(pr)):
+                        if dot.layer_definitions[list(pr)[j]].output_size != output_size:
+                            raise
+                make_edges(pr, prefix + i.debugName(), name, op, input_size=output_size)
             for o in n.outputs():
                 preds[o] = {name}, set()
         else:
@@ -367,11 +419,15 @@ def make_graph(
 
     for i, o in enumerate(gr.outputs()):
         name = prefix + f"out_{i}"
-        dot.node(name, shape="ellipse")
+        dot.node(name, shape="ellipse", input_size=dot.layer_definitions[list(preds[o][0])[0]].output_size)
         pr, op = preds[o]
-        make_edges(pr, "inp_" + name, name, op)
+        output_size = dot.layer_definitions[list(pr)[0]].output_size
+        if len(pr) > 1:
+            for j in range(2,len(pr)):
+                if dot.layer_definitions[list(pr)[j]].output_size != output_size:
+                    raise
+        make_edges(pr, "inp_" + name, name, op, input_size=output_size)
     return dot
-
 
 def create_graph_from_model(
     model: torch.nn.Module,
@@ -381,7 +437,7 @@ def create_graph_from_model(
             str,
         ]
     ] = None,
-    input_res: Tuple[int, int, int, int] = (1, 3, 399, 399),
+    input_res: Tuple[int, int, int, int] = (1, 3, 1024, 1024),
     custom_layers: Optional[List[str]] = None,
     display_se_modules: bool = False,
 ) -> EnrichedNetworkNode:
@@ -424,5 +480,5 @@ def create_graph_from_model(
     )
     tm = torch.jit.trace(model, (torch.randn(*input_res),))
     return make_graph(
-        tm, filter_rf=filter_func, ref_mod=model, classes_to_not_visit=custom_layers
+        input_res, tm, filter_rf=filter_func, ref_mod=model, classes_to_not_visit=custom_layers
     ).to_graph()
